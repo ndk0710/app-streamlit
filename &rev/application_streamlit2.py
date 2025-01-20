@@ -23,7 +23,7 @@ if __name__ == "__main__":
         bar.progress(i+1)
         time.sleep(0.1)
     
-    st.write('Done')
+    st.write('Done!!')
     
     #2カラム
     left_column, right_column = st.columns(2)
