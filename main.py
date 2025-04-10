@@ -206,7 +206,7 @@ if __name__ == '__main__':
 
             #数理最適化の制約条件
             math_matical.constraint_mount_definition()
-            math_matical.constraint_specs_definition(['YCWM-11*（8連）イメセン有','YCWX-20（8連）New'])
+            #math_matical.constraint_specs_definition(['YCWM-11*（8連）イメセン有','YCWX-20（8連）New'])
             
             #数理最適化の問題を解く
             math_matical.solve()
