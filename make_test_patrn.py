@@ -8,8 +8,8 @@ if __name__ == '__main__':
 
     random.seed(42)
 
-    MACHINE_NUM = 1000
-    PRODUCT_NUM = 1000
+    MACHINE_NUM = 10
+    PRODUCT_NUM = 2
 
     #非ゼロ要素の最大数を設定
     max_non_zeros_elements = 3

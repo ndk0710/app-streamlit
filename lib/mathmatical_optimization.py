@@ -122,9 +122,11 @@ class Mathmatical:
                 #設備生産能力がある
                 if self.transposed_specs[k][l] > 0:
                     counter += 1
-            for l in range(self.products_nums):
-                if self.transposed_specs[k][l] > 0:
                     constraints[k] += self.decision_variable[self.products_nums*k+l]
+
+            '''for l in range(self.products_nums):
+                if self.transposed_specs[k][l] > 0:
+                    constraints[k] += self.decision_variable[self.products_nums*k+l]'''
 
         condition_list = []
 
@@ -147,7 +149,8 @@ class Mathmatical:
 
         #重複の削除　制約条件の追加２（保有台数に対する制約）
         unique_list = []
-        [unique_list.append(x) for x in condition_list if x not in unique_list]
+        [unique_list.append(x) for x in condition_list if x not in unique_list and x[1] is not None]
+
         for index, constraint in unique_list:
             self.problem += constraint >= self.number_of_units_owned[index], f"Constraint_{self.last_index+1}"
             self.last_index += 1
