@@ -1,30 +1,23 @@
-from pulp import LpProblem, LpVariable, LpStatus, value, LpMinimize
+from scipy.optimize import linprog
 import pandas as pd
 import numpy as np
 import time
-import csv
 
-def save_2d_array_to_csv(array, filename):
+def find_index(input_list, target):
     """リストの中から該当する要素のインデックスを出力する関数
     
     Parameters:
-    array(list of lists or np.array):出力したい二次元配列
-    filename(str):出力先のファイル名
+    input_list:検索対象のリスト
+    target:検索したい要素
     
+    Returns:
+    int: 該当する要素のインデックス。見つからなければ-1を返す
     """
 
-    # Numpy配列の場合はリストに変換
-    if isinstance(array, (list, tuple)):
-        pass #すでにリストまたはタプルの場合はそのまま使用  
-    elif hasattr(array, 'tolist'):
-        array = array.tolist() #Numpy配列からリスト変換
-    else:
-        raise ValueError("array はリストまたはNumpyである必要があります")
-
-    # CSVファイルへの書き込み
-    with open(filename, mode='w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerows(array)
+    try:
+        return input_list.index(target)
+    except ValueError:
+        return -1
 
 class Mathmatical:
     def __init__(self, products, machines, specs, mounts, number_of_units_owned):
@@ -39,11 +32,7 @@ class Mathmatical:
         self.decision_variable = [f"{product}__{machine}" for machine in self.machines for product in self.products]
         self.last_index = 0
         self.number_of_calc_detail = []
-
-        #メンバ関数の初期化
-        self.problem_definition()
-        #self.constraint_mount_definition()
-        #self.constraint_units_owned_definition()
+        self.c = [1] * len(self.decision_variable)
     
     def __del__(self):
         print(f"オブジェクトを削除しました")
@@ -51,33 +40,55 @@ class Mathmatical:
     # 問題の定義（最小化問題）をする関数
     def problem_definition(self):
 
-        self.problem = LpProblem('Integer_Programing_Example', LpMinimize)
+        #数理最適化の制約条件
+        self.constraint_mount_definition()
+        self.constraint_units_owned_definition()
 
-        objective_function = None
+        #等式制約がない場合は空のリストを指定
+        self.A_eq = None
+        self.b_eq = None
+        
+        self.bounds = []
+        # 空の辞書を作成
+        variables = {}
+        for variable in self.decision_variable:
+            #動的に変数名と値を追加
+            variables[variable]=(0, None)
+            self.bounds.append(variables[variable])
+    
+    # 問題の定義（最小化問題）をする関数
+    def problem_definition2(self):
 
-        #決定変数の定義
-        for k in range(self.machines_nums):
-            for l in range(self.products_nums):
-                self.decision_variable[self.products_nums*k+l] = LpVariable(self.decision_variable[self.products_nums*k+l], lowBound=0)
-                objective_function += self.decision_variable[self.products_nums*k+l]
+        #数理最適化の制約条件
+        self.constraint_mount_definition()
 
-        #目的関数の設定
-        self.problem += objective_function, "Objective"
+        #等式制約がない場合は空のリストを指定
+        self.A_eq = None
+        self.b_eq = None
+
+        self.bounds = []
+        # 空の辞書を作成
+        variables = {}
+        for variable in self.decision_variable:
+            #動的に変数名と値を追加
+            variables[variable]=(0, None)
+            self.bounds.append(variables[variable])
     
     # 制約条件（能力指標に対する制約）の定義をする関数
     def constraint_mount_definition(self):
-        
-        self.decision_variable_2d = [self.decision_variable[i * self.products_nums:(i+1)*self.products_nums]for i in range(self.machines_nums)]
-        self.transposed_decision_variable_2d= [list(row) for row in zip(*self.decision_variable_2d)]
+        # 制約条件➀
+        self.transposed_specs = [list(row) for row in zip(*self.specs)]
+        tmp = [item for sublist in self.transposed_specs for item in sublist]
+        tmp = list(map(lambda x: x * -1, tmp))
 
-        constraints = [None]*self.products_nums
-        for i in range(self.products_nums):
-            for j in range(self.machines_nums):
-                constraints[i] += self.transposed_decision_variable_2d[i][j] * self.specs[i][j]
-            
-            # 制約条件の追加
-            self.problem += constraints[i] >= self.mounts[i], f"Constraint_{self.last_index+1}"
-            self.last_index += 1
+        self.A_ub = []
+        for j in range(self.products_nums):
+            tmps2 = [0]*len(self.decision_variable)
+            for i in range(self.machines_nums):
+                tmps2[self.products_nums*i+j] = tmp[self.products_nums*i+j]
+            self.A_ub.append(tmps2)
+
+        self.b_ub = list(map(lambda x: x * -1, self.mounts))
 
     # 制約条件（設備生産能力）
     def constraint_specs_definition(self, machine_lsit):
@@ -90,13 +101,9 @@ class Mathmatical:
                         self.problem += self.decision_variable[self.products_nums*k+l] == 0, f"Constraint_{self.last_index+1}"
                         self.last_index += 1
 
-
-
     # 制約条件
     def constraint_units_owned_definition(self):
-        
-        self.transposed_specs = [list(row) for row in zip(*self.specs)]
-
+        #制約条件➁
         max_indexs = []
 
         for i in range(self.products_nums):
@@ -118,15 +125,13 @@ class Mathmatical:
         constraints = [None]*self.machines_nums
         for k in range(self.machines_nums):
             counter = 0
+            tmps = []
             for l in range(self.products_nums):
                 #設備生産能力がある
                 if self.transposed_specs[k][l] > 0:
                     counter += 1
-                    constraints[k] += self.decision_variable[self.products_nums*k+l]
-
-            '''for l in range(self.products_nums):
-                if self.transposed_specs[k][l] > 0:
-                    constraints[k] += self.decision_variable[self.products_nums*k+l]'''
+                    tmps.append(self.decision_variable[self.products_nums*k+l])
+            constraints[k] = tmps
 
         condition_list = []
 
@@ -150,10 +155,18 @@ class Mathmatical:
         #重複の削除　制約条件の追加２（保有台数に対する制約）
         unique_list = []
         [unique_list.append(x) for x in condition_list if x not in unique_list and x[1] is not None]
-
         for index, constraint in unique_list:
-            self.problem += constraint >= self.number_of_units_owned[index], f"Constraint_{self.last_index+1}"
+            outputs = [0] * len(self.decision_variable)
+            for target in constraint:
+                if target in self.decision_variable:
+                    idx = find_index(self.decision_variable, target)
+                    outputs[idx] = 1
+            # リストに追加
+            self.A_ub.append(list(map(lambda x: x * -1, outputs)))
+            self.b_ub.append(-1*self.number_of_units_owned[index])
+
             self.last_index += 1
+
     
     # 問題を解く
     def solve(self):
@@ -161,7 +174,7 @@ class Mathmatical:
         start_time = time.time()
 
         #問題を解く
-        self.problem.solve()
+        result = linprog(self.c, A_ub=self.A_ub, b_ub=self.b_ub, A_eq=self.A_eq, b_eq=self.b_eq, bounds=self.bounds, method='highs')
 
         #計算終了
         end_time = time.time()
@@ -171,42 +184,39 @@ class Mathmatical:
         print(f'処理の実行時間：{execution_time}秒')
 
         #結果表示
-        print("Status:", LpStatus[self.problem.status])
-        for index, _ in enumerate(self.decision_variable):
-            if value(self.decision_variable[index])>0:
-                print(f"Optimal value for {self.decision_variable[index]}:", value(self.decision_variable[index]))
+        if result.success:
+            print('最適解が見つかりました。')
 
-        print("Minimum objective function value:", value(self.problem.objective))
+            #CSV出力
+            csv_output = [[0 for _ in range(self.products_nums)]for _ in range(self.machines_nums)]
+            self.row_names = []
+            self.column_names = []
+            for i in range(self.machines_nums):
+                # 装置情報の取得
+                row_name = self.decision_variable[self.products_nums*i]
+                # 特定の文字列が存在する位置を検索
+                row_index = row_name.find('__')
+                self.row_names.append(row_name[row_index+2:])
+                for j in range(self.products_nums):
+                    if result.x[self.products_nums*i+j] > 0:
+                        csv_output[i][j] = result.x[self.products_nums*i+j]
+                    if i==0:
+                        column_name = self.decision_variable[self.products_nums*i+j]
+                        column_index = column_name.find('__')
+                        self.column_names.append(column_name[:column_index])
 
-        #CSV出力
-        csv_output = [[0 for _ in range(self.products_nums)]for _ in range(self.machines_nums)]
-        self.row_names = []
-        self.column_names = []
-        for i in range(self.machines_nums):
-            #装置情報の取得
-            row_name = self.decision_variable[self.products_nums*i].name
-            # 特定の文字列が存在する位置を検索
-            index = row_name.find('__')
-            self.row_names.append(row_name[index+2:])
-            for j in range(self.products_nums):
-                if value(self.decision_variable[self.products_nums*i+j])>0:
-                    csv_output[i][j] = value(self.decision_variable[self.products_nums*i+j])
-                if i==0:
-                    column_name = self.decision_variable[self.products_nums*i].name
-                    column_index = column_name.find('__')
-                    self.column_names.append(column_name[:column_index])
-                
-                #計算結果をメンバ変数に格納（小数点以下3桁目で四捨五入）
-                self.number_of_calc_detail.append(round(value(self.decision_variable[self.products_nums*i+j]),2))
+                    #計算結果をメンバ変数に格納（小数点以下3桁目で四捨五入）
+                    self.number_of_calc_detail.append(round(result.x[self.products_nums*i+j],2))  
 
-        #データをXLSファイルとして出力
-        df = pd.DataFrame(np.array(csv_output), index=self.row_names, columns=self.column_names)
-        df.to_excel('output.xlsx', index=True)
+            #データをXLSファイルとして出力
+            df = pd.DataFrame(np.array(csv_output), index=self.row_names, columns=self.column_names)
+            df.to_excel('output.xlsx', index=True)
 
-        #save_2d_array_to_csv(csv_output, 'output.csv')
-
-        #計算結果取得
-        self.matrix = [self.number_of_calc_detail[i*self.products_nums:(i+1)*self.products_nums] for i in range(self.machines_nums)]
+            #計算結果取得
+            self.matrix = [self.number_of_calc_detail[i*self.products_nums:(i+1)*self.products_nums] for i in range(self.machines_nums)]
+        else:
+            print("最適解が見つかりませんでした")
+            print(f"メッセージ: {result.message}")
 
     # 設備比較（保有台数と計算台数）
     def compare_machines(self):
