@@ -2,26 +2,8 @@ from pulp import LpProblem, LpVariable, LpStatus, value, LpMinimize, lpSum
 import pandas as pd
 import numpy as np
 import time
+import re
 
-
-def get_costs(cost_info, cost_mount):
-
-    bases = list(dict.fromkeys(cost_info['拠点前'].tolist()))
-
-    #output = []
-    for index, base in enumerate(bases):
-        #特定の拠点に絞る
-        filter_cost_info = cost_info[cost_info['拠点前'] == base].copy()
-        filter_cost_mount = cost_mount[cost_mount['拠点'] == base].copy()
-
-        filter_cost_info = filter_cost_info.loc[filter_cost_info["変更前"].isin(filter_cost_mount["設備"].tolist())].reset_index(drop=True)
-        if index == 0:
-            output = filter_cost_info
-        else:
-            # 縦方向に結合
-            output = pd.concat([output, filter_cost_info], ignore_index=True)
-
-    return output
 
 class Cost_Mathmatical:
     def __init__(self, products, cost_info, cost_mount_info, short_machine_info, matrix):
@@ -29,14 +11,14 @@ class Cost_Mathmatical:
         self.products = products
         self.products_nums = int(len(self.products))
         self.matrix = matrix
-        self.cost_mount = cost_mount_info.loc[cost_mount_info["保有台数"] >= 1]
-        sum_short_machine_info = short_machine_info.groupby("設備", as_index=False)["不足台数"].sum()
+        self.cost_mount_info = cost_mount_info
         self.machines_nums = int(len(self.matrix))
-        self.short_machine = sum_short_machine_info
-        self.cost_info = get_costs(cost_info, self.cost_mount)
+        sum_short_machine_info = short_machine_info.groupby("設備", as_index=False)["不足台数"].sum()
 
-        self.decision_variable = [f"{row['変更前']}__{row['変更後']}" for _, row in self.cost_info.iterrows()]
-        '''self.decision_variable = [f"{row['拠点前']}_{row['変更前']}__{row['拠点後']}_{row['変更後']}" for _, row in self.cost_info.iterrows()]'''
+        self.short_machine = sum_short_machine_info
+        self.cost_info = cost_info
+        #self.decision_variable = [f"{row['変更前']}__{row['変更後']}" for _, row in self.cost_info.iterrows()]
+        self.decision_variable = [f"{row['拠点前']}_{row['変更前']}__{row['拠点後']}_{row['変更後']}" for _, row in self.cost_info.iterrows()]
 
         self.last_index = 0
         self.constraint_condition = []
@@ -64,31 +46,13 @@ class Cost_Mathmatical:
     
     # 制約条件 (余剰設備に対する制約)の定義をする関数
     def constraint_excess_facilities_definition(self):
-        cost= self.cost_info["コスト"].tolist()
-        self.col_size = len(self.cost_mount)
-        #self.machines_nums = int(len(cost)/self.col_size)
-        self.machines_nums = int(len(self.matrix))
-
-        cost_2d = [cost[i:i + self.machines_nums] for i in range(0, len(cost), self.machines_nums)]
-        for i in range(self.col_size):
-            tmp=0
-            for j in range(self.machines_nums):
-                if cost_2d[i][j] > 0:
-                    tmp+=self.decision_variable[i*self.machines_nums+j]
-            name = self.decision_variable[i*self.machines_nums+j].name.split("__")[0]
-            '''name = name.split("_")[1]'''
-            mount_number = self.cost_mount["保有台数"].loc[self.cost_mount["設備"] == name].iloc[0]
-            self.constraint_condition.append(tmp == mount_number)
-        check=0
-    
-    def constraint_excess_facilities_definition2(self):
         # 各 decision_variable に対応する (拠点前, 変更前, コスト) を取得
         before_sites = self.cost_info["拠点前"].tolist()
         before_machines = self.cost_info["変更前"].tolist()
         costs = self.cost_info["コスト"].tolist()
 
         # 全ての (拠点, 設備) を走査
-        for _, row in self.cost_mount.iterrows():
+        for _, row in self.cost_mount_info.iterrows():
             site = row["拠点"]
             machine = row["設備"]
             mount_number = row["保有台数"]
@@ -102,10 +66,8 @@ class Cost_Mathmatical:
 
             if vars_for_machine:  # 対応関係が存在する場合のみ制約を追加
                 self.constraint_condition.append(lpSum(vars_for_machine) == mount_number)
-        check=0
-
-
-     # 制約条件 (不足設備に対する制約)の定義をする関数
+    
+    # 制約条件 (不足設備に対する制約)の定義をする関数
     def constraint_lack_of_facilities_definition(self):
         for index, row in self.short_machine.iterrows():
             target_machine = row["設備"]
@@ -115,7 +77,6 @@ class Cost_Mathmatical:
             for index, row in filtered_cost_info.iterrows():
                 tmp+=self.decision_variable[index]
             self.constraint_condition.append(tmp <= short_number)
-        check=0
 
     def set(self):
         for constraint in self.constraint_condition:
@@ -123,7 +84,69 @@ class Cost_Mathmatical:
             self.problem += constraint, f'Constraint_{self.last_index}'
             self.last_index += 1
 
+    def update_cost_mount_info(self):
+        # DataFrame: self.cost_mount_info
+        # columns = ["拠点", "設備", "保有台数"]
+
+        # 行に素早くアクセスできるように index を (拠点, 設備) に設定
+        self.cost_mount_info = self.cost_mount_info.set_index(["拠点", "設備"])
+
+        for var, (_, row) in zip(self.decision_variable, self.cost_info.iterrows()):
+            value = var.value()
+            if value is None or value == 0:
+                continue
+
+            from_site, from_machine = row["拠点前"], row["変更前"]
+            to_site, to_machine = row["拠点後"], row["変更後"]
+
+            # 移動元から減算
+            self.cost_mount_info.at[(from_site, from_machine), "保有台数"] -= value
+            # 移動先へ加算
+            self.cost_mount_info.at[(to_site, to_machine), "保有台数"] += value
+
+        # index を戻す
+        self.cost_mount_info = self.cost_mount_info.reset_index()
     
+    def extract_results(self):
+        records = []
+
+        # self.decision_variable は LpVariable のリスト
+        for var in self.decision_variable:
+            name = var.name
+            value = var.varValue
+
+            if value is None or value <= 0:  # 未割当 or 0 はスキップ
+                continue
+
+            # 変数名を分解（例: "TOM_MN0001__FMC_MN0001"）
+            match = re.match(r"(\w+)_(\w+)__([\w]+)_(\w+)", name)
+            if not match:
+                continue
+
+            pre_site, pre_machine, post_site, post_machine = match.groups()
+
+            # コスト情報を検索
+            cost_row = self.cost_info[
+                (self.cost_info["拠点前"] == pre_site) &
+                (self.cost_info["変更前"] == pre_machine) &
+                (self.cost_info["拠点後"] == post_site) &
+                (self.cost_info["変更後"] == post_machine)
+            ]
+
+            if cost_row.empty:
+                continue
+
+            cost = cost_row["コスト"].iloc[0]
+            category = cost_row["分類"].iloc[0]
+
+            records.append([
+                pre_site, pre_machine, post_site, post_machine,
+                cost, int(value), category
+            ])
+
+        return records
+    
+
     # 問題を解く
     def solve(self):
         #計測開始
@@ -151,35 +174,7 @@ class Cost_Mathmatical:
 
         print("Minimum objective function value:", value(self.problem.objective))
 
+        #余剰設備の更新
+        self.update_cost_mount_info()
 
-        def subtract_until_zero(a, b):
-            if a > b:  # AがBより大きい場合のみ処理を開始
-                while b > 0:
-                    a -= b
-                    #print(f"A: {a}, B: {b}")
-                    b -= 1
-            return a
-
-
-        #CSV出力
-        self.row_names = []
-        for i in range(self.machines_nums):
-            
-            #装置情報の取得
-            row_name = self.decision_variable[i].name
-            # 特定の文字列が存在する位置を検索
-            index = row_name.find('__')
-            self.row_names.append(row_name[index+2:])
-            
-            for j in range(self.products_nums):
-                if ans_machine[i] == 0:
-                    break
-                else:
-                    if self.matrix[i][j] > 0:
-                        #輸送・改造コストによる振り分け
-                        self.matrix[i][j] = subtract_until_zero(self.matrix[i][j], ans_machine[i])
-                        break    
-                    
-        #データをXLSファイルとして出力
-        df = pd.DataFrame(np.array(self.matrix), index=self.row_names, columns=self.products)
-        df.to_excel('output_cost.xlsx', index=True)
+        return self.extract_results()
